@@ -1,6 +1,7 @@
 "use client";
 
 import { ChangeEvent, DragEvent, useMemo, useRef, useState } from "react";
+import type { UploaderCopy } from "../lib/i18n";
 
 const ACCEPT = ".jpg,.jpeg,.png,.webp";
 const MAX_SIZE_MB = 10;
@@ -11,7 +12,7 @@ function formatFileSize(bytes: number) {
   return `${(bytes / 1024 / 1024).toFixed(2)} MB`;
 }
 
-export function Uploader() {
+export function Uploader({ t }: { t: UploaderCopy }) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [dragging, setDragging] = useState(false);
   const [status, setStatus] = useState<Status>("idle");
@@ -30,11 +31,11 @@ export function Uploader() {
 
   const validateClientSide = (file: File) => {
     if (!["image/jpeg", "image/png", "image/webp"].includes(file.type)) {
-      throw new Error("Only JPG, PNG, and WebP files are supported.");
+      throw new Error(t.onlyFormatsError);
     }
 
     if (file.size > MAX_SIZE_MB * 1024 * 1024) {
-      throw new Error(`Image too large (${formatFileSize(file.size)}). Please upload up to ${MAX_SIZE_MB}MB.`);
+      throw new Error(t.imageTooLargeError(formatFileSize(file.size), MAX_SIZE_MB));
     }
   };
 
@@ -56,7 +57,7 @@ export function Uploader() {
 
       if (!response.ok) {
         const data = (await response.json().catch(() => null)) as { error?: string } | null;
-        throw new Error(data?.error || "Processing failed. Please try again.");
+        throw new Error(data?.error || t.processingFailedError);
       }
 
       const blob = await response.blob();
@@ -64,7 +65,7 @@ export function Uploader() {
       setStatus("success");
     } catch (err) {
       setStatus("error");
-      setError(err instanceof Error ? err.message : "Unexpected error.");
+      setError(err instanceof Error ? err.message : t.unexpectedError);
     }
   };
 
@@ -100,25 +101,26 @@ export function Uploader() {
         <input ref={inputRef} type="file" accept={ACCEPT} onChange={onInputChange} className="hidden" />
         <div className="mx-auto flex max-w-2xl flex-col items-center gap-4 text-center">
           <div className="rounded-full border border-brand-400/40 bg-brand-500/10 px-4 py-1 text-sm text-brand-100">
-            JPG / PNG / WebP · up to 10MB
+            {t.fileBadge}
           </div>
-          <h2 className="text-2xl font-semibold text-white sm:text-3xl">Upload an image and remove the background in one step</h2>
-          <p className="max-w-xl text-sm text-slate-300 sm:text-base">
-            Your image is processed in-memory during the request only. No account, no storage, no history.
-          </p>
+          <h2 className="text-2xl font-semibold text-white sm:text-3xl">{t.title}</h2>
+          <p className="max-w-xl text-sm text-slate-300 sm:text-base">{t.description}</p>
           <div className="flex flex-col gap-3 sm:flex-row">
             <button
               type="button"
               onClick={() => inputRef.current?.click()}
               className="rounded-full bg-brand-500 px-6 py-3 font-medium text-white transition hover:bg-brand-600"
             >
-              Choose image
+              {t.chooseImage}
             </button>
-            <a href="#faq" className="rounded-full border border-slate-600 px-6 py-3 font-medium text-slate-200 no-underline transition hover:border-slate-400">
-              Read FAQ
+            <a
+              href="#faq"
+              className="rounded-full border border-slate-600 px-6 py-3 font-medium text-slate-200 no-underline transition hover:border-slate-400"
+            >
+              {t.readFaq}
             </a>
           </div>
-          {status === "uploading" ? <p className="text-sm text-brand-100">Processing with remove.bg…</p> : null}
+          {status === "uploading" ? <p className="text-sm text-brand-100">{t.processing}</p> : null}
           {error ? <p className="text-sm text-rose-300">{error}</p> : null}
         </div>
       </div>
@@ -126,29 +128,29 @@ export function Uploader() {
       <div className="grid gap-6 lg:grid-cols-2">
         <div className="rounded-3xl border border-slate-800 bg-slate-900/80 p-5 shadow-soft">
           <div className="mb-4 flex items-center justify-between">
-            <h3 className="text-lg font-semibold text-white">Original</h3>
+            <h3 className="text-lg font-semibold text-white">{t.original}</h3>
             {originalName ? <span className="text-xs text-slate-400">{originalName}</span> : null}
           </div>
           <div className="flex aspect-square items-center justify-center overflow-hidden rounded-2xl border border-slate-800 bg-slate-950">
             {originalUrl ? (
               // eslint-disable-next-line @next/next/no-img-element
-              <img src={originalUrl} alt="Original preview" className="h-full w-full object-contain" />
+              <img src={originalUrl} alt={t.originalAlt} className="h-full w-full object-contain" />
             ) : (
-              <p className="px-6 text-center text-sm text-slate-500">Upload an image to preview the original.</p>
+              <p className="px-6 text-center text-sm text-slate-500">{t.originalPlaceholder}</p>
             )}
           </div>
         </div>
 
         <div className="rounded-3xl border border-slate-800 bg-slate-900/80 p-5 shadow-soft">
           <div className="mb-4 flex items-center justify-between">
-            <h3 className="text-lg font-semibold text-white">Background removed</h3>
+            <h3 className="text-lg font-semibold text-white">{t.removed}</h3>
             {hasResult ? (
               <a
                 href={resultUrl}
                 download="removed-background.png"
                 className="rounded-full bg-white px-4 py-2 text-sm font-medium text-slate-950 no-underline transition hover:bg-slate-200"
               >
-                Download PNG
+                {t.downloadPng}
               </a>
             ) : null}
           </div>
@@ -164,11 +166,9 @@ export function Uploader() {
             <div className="flex h-full items-center justify-center">
               {resultUrl ? (
                 // eslint-disable-next-line @next/next/no-img-element
-                <img src={resultUrl} alt="Processed preview" className="h-full w-full object-contain" />
+                <img src={resultUrl} alt={t.processedAlt} className="h-full w-full object-contain" />
               ) : (
-                <p className="px-6 text-center text-sm text-slate-500">
-                  The transparent PNG result will show here after processing.
-                </p>
+                <p className="px-6 text-center text-sm text-slate-500">{t.resultPlaceholder}</p>
               )}
             </div>
           </div>
