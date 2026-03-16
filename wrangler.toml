@@ -1,0 +1,11 @@
+name = "image-background-remover"
+compatibility_date = "2026-03-15"
+compatibility_flags = ["nodejs_compat"]
+
+[vars]
+NEXT_PUBLIC_APP_NAME = "Image Background Remover"
+
+# For local development, put secrets in .env.local.
+# For Cloudflare deploy, set with:
+#   wrangler secret put REMOVE_BG_API_KEY
+# or configure the same secret in Cloudflare Pages / Workers.

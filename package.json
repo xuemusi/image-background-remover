@@ -1,0 +1,26 @@
+{
+  "name": "image-background-remover",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "NODE_ENV=development next dev",
+    "build": "NODE_ENV=production next build",
+    "start": "NODE_ENV=production next start",
+    "lint": "next lint"
+  },
+  "dependencies": {
+    "next": "14.2.30",
+    "react": "18.3.1",
+    "react-dom": "18.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.17.50",
+    "@types/react": "18.3.28",
+    "@types/react-dom": "^18.3.5",
+    "autoprefixer": "^10.4.27",
+    "dotenv-cli": "^11.0.0",
+    "postcss": "^8.5.8",
+    "tailwindcss": "^3.4.19",
+    "typescript": "5.9.3"
+  }
+}
