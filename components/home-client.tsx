@@ -6,14 +6,38 @@ import { copy, type Locale } from "../lib/i18n";
 
 const STORAGE_KEY = "image-bg-remover-locale";
 
+type SessionUser = {
+  name?: string;
+  email?: string;
+  picture?: string;
+};
+
 export function HomeClient() {
   const [locale, setLocale] = useState<Locale>("en");
+  const [authLoading, setAuthLoading] = useState(true);
+  const [authRedirecting, setAuthRedirecting] = useState(false);
+  const [user, setUser] = useState<SessionUser | null>(null);
 
   useEffect(() => {
     const saved = window.localStorage.getItem(STORAGE_KEY);
     if (saved === "en" || saved === "zh") {
       setLocale(saved);
     }
+  }, []);
+
+  useEffect(() => {
+    const loadSession = async () => {
+      try {
+        const response = await fetch("/api/auth/session", { credentials: "include" });
+        if (!response.ok) return;
+        const data = await response.json();
+        setUser(data?.authenticated ? data.user : null);
+      } finally {
+        setAuthLoading(false);
+      }
+    };
+
+    loadSession();
   }, []);
 
   const toggleLocale = () => {
@@ -24,24 +48,81 @@ export function HomeClient() {
     });
   };
 
+  const handleSignIn = () => {
+    setAuthRedirecting(true);
+    window.location.href = `/api/auth/google/start?locale=${locale}`;
+  };
+
+  const handleSignOut = async () => {
+    await fetch("/api/auth/logout", {
+      method: "POST",
+      credentials: "include"
+    });
+    window.location.reload();
+  };
+
   const t = copy[locale];
 
   return (
     <main className="min-h-screen bg-[radial-gradient(circle_at_top,_rgba(14,165,233,0.18),_transparent_30%),linear-gradient(180deg,_#020617_0%,_#020617_100%)]">
       <div className="mx-auto flex max-w-6xl flex-col gap-16 px-6 py-10 sm:px-10 lg:px-12">
         <header className="flex flex-col gap-6 rounded-[2rem] border border-slate-800 bg-slate-900/60 p-8 shadow-soft backdrop-blur sm:p-10">
-          <div className="flex items-center justify-between gap-4">
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
             <div className="inline-flex w-fit rounded-full border border-brand-400/30 bg-brand-500/10 px-4 py-1 text-sm text-brand-100">
               {t.heroBadge}
             </div>
-            <button
-              type="button"
-              onClick={toggleLocale}
-              className="rounded-full border border-slate-600 px-4 py-1 text-sm font-medium text-slate-100 transition hover:border-slate-400"
-            >
-              {t.localeLabel} → {t.switchTo}
-            </button>
+            <div className="flex items-center gap-3 self-end sm:self-auto">
+              <button
+                type="button"
+                onClick={toggleLocale}
+                className="rounded-full border border-slate-600 px-4 py-1 text-sm font-medium text-slate-100 transition hover:border-slate-400"
+              >
+                {t.localeLabel} → {t.switchTo}
+              </button>
+            </div>
           </div>
+
+          <div className="rounded-2xl border border-slate-800 bg-slate-950/50 p-4 sm:p-5">
+            {user ? (
+              <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+                <div className="flex items-center gap-3">
+                  {user.picture ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img src={user.picture} alt={user.name || "avatar"} className="h-10 w-10 rounded-full border border-slate-700" />
+                  ) : (
+                    <div className="flex h-10 w-10 items-center justify-center rounded-full border border-slate-700 text-xs text-slate-300">
+                      G
+                    </div>
+                  )}
+                  <div>
+                    <p className="text-xs uppercase tracking-[0.15em] text-slate-400">{t.signedInAs}</p>
+                    <p className="text-sm text-slate-100">{user.name || user.email || "Google User"}</p>
+                    {user.email ? <p className="text-xs text-slate-400">{user.email}</p> : null}
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={handleSignOut}
+                  className="rounded-full border border-slate-600 px-4 py-1 text-sm font-medium text-slate-100 transition hover:border-slate-400"
+                >
+                  {t.signOut}
+                </button>
+              </div>
+            ) : (
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <p className="text-sm text-slate-300">{authLoading ? "..." : t.notSignedIn}</p>
+                <button
+                  type="button"
+                  onClick={handleSignIn}
+                  disabled={authRedirecting}
+                  className="rounded-full bg-white px-4 py-1 text-sm font-semibold text-slate-900 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-70"
+                >
+                  {authRedirecting ? t.signingIn : t.signInWithGoogle}
+                </button>
+              </div>
+            )}
+          </div>
+
           <div className="grid gap-8 lg:grid-cols-[1.3fr_0.7fr] lg:items-end">
             <div className="space-y-5">
               <h1 className="max-w-3xl text-4xl font-semibold tracking-tight text-white sm:text-5xl">{t.heroTitle}</h1>

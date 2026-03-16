@@ -23,6 +23,11 @@ export type UploaderCopy = {
 export type HomeCopy = {
   localeLabel: string;
   switchTo: string;
+  signInWithGoogle: string;
+  signingIn: string;
+  signOut: string;
+  signedInAs: string;
+  notSignedIn: string;
   heroBadge: string;
   heroTitle: string;
   heroDescription: string;
@@ -40,6 +45,11 @@ export const copy: Record<Locale, HomeCopy> = {
   en: {
     localeLabel: "EN",
     switchTo: "中文",
+    signInWithGoogle: "Sign in with Google",
+    signingIn: "Redirecting to Google…",
+    signOut: "Sign out",
+    signedInAs: "Signed in as",
+    notSignedIn: "Not signed in",
     heroBadge: "Cloudflare-ready MVP · Next.js + Tailwind CSS",
     heroTitle: "Image Background Remover",
     heroDescription:
@@ -107,6 +117,11 @@ export const copy: Record<Locale, HomeCopy> = {
   zh: {
     localeLabel: "中文",
     switchTo: "EN",
+    signInWithGoogle: "使用 Google 登录",
+    signingIn: "正在跳转到 Google…",
+    signOut: "退出登录",
+    signedInAs: "当前登录",
+    notSignedIn: "未登录",
     heroBadge: "Cloudflare 可部署 MVP · Next.js + Tailwind CSS",
     heroTitle: "图片背景移除",
     heroDescription: "一键移除图片背景。这个 MVP 聚焦最快流程：上传、处理、预览并下载透明 PNG。",

@@ -16,8 +16,8 @@
 ## 技术说明
 
 - **前端**：Next.js 14 + React 18 + Tailwind CSS
-- **后端**：Next.js Route Handler（`runtime = "edge"`）
-- **部署目标**：Cloudflare Pages / Workers 轻量适配方向
+- **后端**：Cloudflare Pages Advanced Mode `_worker.js`（处理 remove.bg 与 OAuth）
+- **部署目标**：Cloudflare Pages + 静态导出 + Worker API
 - **存储策略**：无数据库、无对象存储、图片仅在请求生命周期内以内存方式中转
 
 ## 目录结构
@@ -54,9 +54,14 @@ cp .env.example .env.local
 
 ```bash
 REMOVE_BG_API_KEY=your_remove_bg_api_key_here
+GOOGLE_CLIENT_ID=your_google_client_id_here
+GOOGLE_CLIENT_SECRET=your_google_client_secret_here
+AUTH_SESSION_SECRET=replace_with_a_long_random_secret
+# 可选：用于显式声明回调域名（默认自动用当前请求域名）
+# APP_BASE_URL=http://localhost:3000
 ```
 
-> 注意：`REMOVE_BG_API_KEY` 必须只保留在服务端，不要暴露到前端。
+> 注意：`REMOVE_BG_API_KEY`、`GOOGLE_CLIENT_SECRET`、`AUTH_SESSION_SECRET` 必须只保留在服务端，不要暴露到前端。
 
 ## 本地启动
 
@@ -69,6 +74,17 @@ npm run dev
 默认访问：
 
 - `http://localhost:3000`
+
+## Google OAuth 配置
+
+请在 Google Cloud Console 创建 OAuth Client（Web 应用），并配置回调：
+
+- 本地：`http://localhost:3000/api/auth/google/callback`
+- 生产：`https://<你的域名>/api/auth/google/callback`
+
+例如 Pages 默认域名可用：
+
+- `https://image-background-remover-16e.pages.dev/api/auth/google/callback`
 
 ## API 说明
 
@@ -89,6 +105,13 @@ npm run dev
 { "error": "..." }
 ```
 
+### Google OAuth API（由 `cloudflare/_worker.js` 提供）
+
+- `GET /api/auth/google/start`：发起 Google 登录跳转
+- `GET /api/auth/google/callback`：Google 回调，交换 token 并建立 session cookie
+- `GET /api/auth/session`：读取当前登录态（返回 `authenticated` 与 `user`）
+- `POST /api/auth/logout`：清除登录态 cookie
+
 ## Cloudflare 部署建议
 
 当前代码优先做了**本地可开发 / 结构清晰 / 向 Cloudflare 靠拢**的 MVP 骨架。
@@ -100,9 +123,14 @@ npm run dev
 
 最关键的是：
 
-- 在 Cloudflare 控制台配置 `REMOVE_BG_API_KEY`
+- 在 Cloudflare 控制台配置以下变量：
+  - `REMOVE_BG_API_KEY`
+  - `GOOGLE_CLIENT_ID`
+  - `GOOGLE_CLIENT_SECRET`
+  - `AUTH_SESSION_SECRET`
+  - （可选）`APP_BASE_URL`
 - 不开启图片持久化存储
-- 仅通过服务端 route 转发到 remove.bg
+- remove.bg 与 Google OAuth 都由 Worker 端处理，前端只走同域 API
 
 ## 后续建议
 
