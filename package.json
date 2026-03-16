@@ -4,8 +4,8 @@
   "private": true,
   "scripts": {
     "dev": "NODE_ENV=development next dev",
-    "build": "NODE_ENV=production next build",
-    "start": "NODE_ENV=production next start",
+    "build": "NODE_ENV=production next build && node scripts/postbuild.mjs",
+    "start": "npx serve out -l 3012",
     "lint": "next lint"
   },
   "dependencies": {
@@ -21,6 +21,7 @@
     "dotenv-cli": "^11.0.0",
     "postcss": "^8.5.8",
     "tailwindcss": "^3.4.19",
-    "typescript": "5.9.3"
+    "typescript": "5.9.3",
+    "serve": "^14.2.4"
   }
 }
