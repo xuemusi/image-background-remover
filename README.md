@@ -18,7 +18,7 @@
 - **前端**：Next.js 14 + React 18 + Tailwind CSS
 - **后端**：Cloudflare Pages Advanced Mode `_worker.js`（处理 remove.bg 与 OAuth）
 - **部署目标**：Cloudflare Pages + 静态导出 + Worker API
-- **存储策略**：无数据库、无对象存储、图片仅在请求生命周期内以内存方式中转
+- **存储策略**：图片仍是无持久化中转；用户体系 Phase-1 可接 Cloudflare D1（无 D1 时自动降级为内存态）
 
 ## 目录结构
 
@@ -108,9 +108,15 @@ npm run dev
 ### Google OAuth API（由 `cloudflare/_worker.js` 提供）
 
 - `GET /api/auth/google/start`：发起 Google 登录跳转
-- `GET /api/auth/google/callback`：Google 回调，交换 token 并建立 session cookie
+- `GET /api/auth/google/callback`：Google 回调，交换 token，自动建档（users + credits）并建立 session cookie
 - `GET /api/auth/session`：读取当前登录态（返回 `authenticated` 与 `user`）
 - `POST /api/auth/logout`：清除登录态 cookie
+
+### User Center / Dashboard API（由 `cloudflare/_worker.js` 提供）
+
+- `GET /api/me`：当前用户信息 + credits（D1 或内存 fallback）
+- `GET /api/me/orders`：当前用户最近订单
+- `POST /api/orders`：创建订单草稿（PayPal 占位，尚未 capture）
 
 ## Cloudflare 部署建议
 
@@ -129,8 +135,9 @@ npm run dev
   - `GOOGLE_CLIENT_SECRET`
   - `AUTH_SESSION_SECRET`
   - （可选）`APP_BASE_URL`
+- 配置 D1 绑定 `DB`（见 `wrangler.toml`）并执行 `migrations/0001_user_system.sql`
 - 不开启图片持久化存储
-- remove.bg 与 Google OAuth 都由 Worker 端处理，前端只走同域 API
+- remove.bg、OAuth、用户中心 API 都由 Worker 端处理，前端只走同域 API
 
 ## 后续建议
 

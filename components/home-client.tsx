@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import { Uploader } from "./uploader";
 import { copy, type Locale } from "../lib/i18n";
 
@@ -100,13 +101,21 @@ export function HomeClient() {
                     {user.email ? <p className="text-xs text-slate-400">{user.email}</p> : null}
                   </div>
                 </div>
-                <button
-                  type="button"
-                  onClick={handleSignOut}
-                  className="rounded-full border border-slate-600 px-4 py-1 text-sm font-medium text-slate-100 transition hover:border-slate-400"
-                >
-                  {t.signOut}
-                </button>
+                <div className="flex items-center gap-2">
+                  <Link
+                    href="/dashboard"
+                    className="rounded-full border border-slate-600 px-4 py-1 text-sm font-medium text-slate-100 transition hover:border-slate-400"
+                  >
+                    {t.dashboard}
+                  </Link>
+                  <button
+                    type="button"
+                    onClick={handleSignOut}
+                    className="rounded-full border border-slate-600 px-4 py-1 text-sm font-medium text-slate-100 transition hover:border-slate-400"
+                  >
+                    {t.signOut}
+                  </button>
+                </div>
               </div>
             ) : (
               <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">

@@ -9,3 +9,8 @@ NEXT_PUBLIC_APP_NAME = "Image Background Remover"
 # For Cloudflare deploy, set with:
 #   wrangler secret put REMOVE_BG_API_KEY
 # or configure the same secret in Cloudflare Pages / Workers.
+
+[[d1_databases]]
+binding = "DB"
+database_name = "image_bg_remover"
+database_id = "replace-with-your-d1-database-id"

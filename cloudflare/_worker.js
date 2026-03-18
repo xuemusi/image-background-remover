@@ -10,6 +10,10 @@ const OAUTH_STATE_COOKIE = "ibgr_oauth_state";
 const SESSION_TTL_SECONDS = 60 * 60 * 24 * 7;
 const OAUTH_STATE_TTL_SECONDS = 60 * 10;
 
+const memoryUsersBySub = new Map();
+const memoryCreditsByUserId = new Map();
+const memoryOrdersByUserId = new Map();
+
 function json(data, status = 200) {
   return new Response(JSON.stringify(data), {
     status,
@@ -101,6 +105,11 @@ function randomState() {
   return base64UrlEncode(bytes);
 }
 
+function randomId(prefix) {
+  const bytes = crypto.getRandomValues(new Uint8Array(12));
+  return `${prefix}_${base64UrlEncode(bytes)}`;
+}
+
 function validateImage(file) {
   if (!file || typeof file === "string") {
     throw new Error("Missing image file.");
@@ -115,6 +124,294 @@ function validateImage(file) {
     err.status = 413;
     throw err;
   }
+}
+
+function getD1(env) {
+  return env.DB || null;
+}
+
+async function upsertUserFromGoogle(profile, env) {
+  const db = getD1(env);
+  const now = new Date().toISOString();
+
+  if (!db) {
+    const existing = memoryUsersBySub.get(profile.sub);
+    const user = {
+      id: existing?.id || randomId("usr"),
+      sub: profile.sub,
+      email: profile.email || "",
+      name: profile.name || "Google User",
+      picture: profile.picture || null,
+      lastLoginAt: now,
+      createdAt: existing?.createdAt || now,
+      updatedAt: now,
+    };
+    memoryUsersBySub.set(profile.sub, user);
+
+    if (!memoryCreditsByUserId.has(user.id)) {
+      memoryCreditsByUserId.set(user.id, {
+        userId: user.id,
+        balance: 0,
+        lifetimeCredited: 0,
+        lifetimeUsed: 0,
+        updatedAt: now,
+      });
+    }
+
+    return { user, credits: memoryCreditsByUserId.get(user.id) };
+  }
+
+  const userId = randomId("usr");
+  await db
+    .prepare(`
+      INSERT INTO users (id, google_sub, email, name, avatar_url, created_at, updated_at, last_login_at)
+      VALUES (?1, ?2, ?3, ?4, ?5, datetime('now'), datetime('now'), datetime('now'))
+      ON CONFLICT(google_sub) DO UPDATE SET
+        email = excluded.email,
+        name = excluded.name,
+        avatar_url = excluded.avatar_url,
+        updated_at = datetime('now'),
+        last_login_at = datetime('now')
+    `)
+    .bind(userId, profile.sub, profile.email || "", profile.name || "Google User", profile.picture || null)
+    .run();
+
+  const user = await db
+    .prepare(`
+      SELECT
+        id,
+        google_sub as sub,
+        email,
+        name,
+        avatar_url as picture,
+        created_at as createdAt,
+        updated_at as updatedAt,
+        last_login_at as lastLoginAt
+      FROM users
+      WHERE google_sub = ?1
+    `)
+    .bind(profile.sub)
+    .first();
+
+  await db
+    .prepare(`
+      INSERT INTO user_credits (user_id, balance, lifetime_credited, lifetime_used, updated_at)
+      VALUES (?1, 0, 0, 0, datetime('now'))
+      ON CONFLICT(user_id) DO NOTHING
+    `)
+    .bind(user.id)
+    .run();
+
+  const credits = await db
+    .prepare(`
+      SELECT
+        user_id as userId,
+        balance,
+        lifetime_credited as lifetimeCredited,
+        lifetime_used as lifetimeUsed,
+        updated_at as updatedAt
+      FROM user_credits
+      WHERE user_id = ?1
+    `)
+    .bind(user.id)
+    .first();
+
+  return { user, credits };
+}
+
+async function getUserAndCreditsBySession(payload, env) {
+  const db = getD1(env);
+
+  if (!db) {
+    const user = memoryUsersBySub.get(payload.sub);
+    if (!user) {
+      return {
+        user: {
+          id: payload.uid || null,
+          sub: payload.sub,
+          email: payload.email,
+          name: payload.name,
+          picture: payload.picture,
+        },
+        credits: {
+          userId: payload.uid || null,
+          balance: 0,
+          lifetimeCredited: 0,
+          lifetimeUsed: 0,
+        },
+      };
+    }
+
+    const credits = memoryCreditsByUserId.get(user.id) || {
+      userId: user.id,
+      balance: 0,
+      lifetimeCredited: 0,
+      lifetimeUsed: 0,
+    };
+
+    return { user, credits };
+  }
+
+  const user = await db
+    .prepare(`
+      SELECT
+        id,
+        google_sub as sub,
+        email,
+        name,
+        avatar_url as picture,
+        created_at as createdAt,
+        updated_at as updatedAt,
+        last_login_at as lastLoginAt
+      FROM users
+      WHERE google_sub = ?1
+    `)
+    .bind(payload.sub)
+    .first();
+
+  if (!user) {
+    return {
+      user: {
+        id: payload.uid || null,
+        sub: payload.sub,
+        email: payload.email,
+        name: payload.name,
+        picture: payload.picture,
+      },
+      credits: {
+        userId: payload.uid || null,
+        balance: 0,
+        lifetimeCredited: 0,
+        lifetimeUsed: 0,
+      },
+    };
+  }
+
+  const credits = await db
+    .prepare(`
+      SELECT
+        user_id as userId,
+        balance,
+        lifetime_credited as lifetimeCredited,
+        lifetime_used as lifetimeUsed,
+        updated_at as updatedAt
+      FROM user_credits
+      WHERE user_id = ?1
+    `)
+    .bind(user.id)
+    .first();
+
+  return {
+    user,
+    credits: credits || {
+      userId: user.id,
+      balance: 0,
+      lifetimeCredited: 0,
+      lifetimeUsed: 0,
+    },
+  };
+}
+
+async function listOrdersByUserId(userId, env) {
+  const db = getD1(env);
+
+  if (!db) {
+    const orders = memoryOrdersByUserId.get(userId) || [];
+    return orders.slice(0, 20);
+  }
+
+  const result = await db
+    .prepare(`
+      SELECT
+        id,
+        plan_code as planCode,
+        plan_name as planName,
+        amount_cents as amountCents,
+        currency,
+        status,
+        credits_granted as creditsGranted,
+        created_at as createdAt,
+        updated_at as updatedAt
+      FROM orders
+      WHERE user_id = ?1
+      ORDER BY created_at DESC
+      LIMIT 20
+    `)
+    .bind(userId)
+    .all();
+
+  return result?.results || [];
+}
+
+async function createDraftOrderForUser(userId, input, env) {
+  const db = getD1(env);
+  const now = new Date().toISOString();
+  const planMap = {
+    starter_10: { planName: "Starter 10", amountCents: 499, creditsGranted: 10 },
+    pro_50: { planName: "Pro 50", amountCents: 1299, creditsGranted: 50 },
+    business_200: { planName: "Business 200", amountCents: 2999, creditsGranted: 200 },
+  };
+
+  const selected = planMap[input.planCode];
+  if (!selected) {
+    return { error: "Invalid plan code", status: 400 };
+  }
+
+  const order = {
+    id: randomId("ord"),
+    userId,
+    provider: "paypal",
+    providerOrderId: null,
+    planCode: input.planCode,
+    planName: selected.planName,
+    amountCents: selected.amountCents,
+    currency: "USD",
+    status: "pending",
+    creditsGranted: 0,
+    creditGrantedAt: null,
+    createdAt: now,
+    updatedAt: now,
+  };
+
+  if (!db) {
+    const list = memoryOrdersByUserId.get(userId) || [];
+    list.unshift(order);
+    memoryOrdersByUserId.set(userId, list);
+    return { order };
+  }
+
+  await db
+    .prepare(`
+      INSERT INTO orders (
+        id, user_id, provider, provider_order_id, plan_code, plan_name,
+        amount_cents, currency, status, credits_granted, credit_granted_at,
+        created_at, updated_at
+      ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, datetime('now'), datetime('now'))
+    `)
+    .bind(
+      order.id,
+      order.userId,
+      order.provider,
+      order.providerOrderId,
+      order.planCode,
+      order.planName,
+      order.amountCents,
+      order.currency,
+      order.status,
+      order.creditsGranted,
+      order.creditGrantedAt,
+    )
+    .run();
+
+  return { order };
+}
+
+async function getSessionPayload(request, env) {
+  if (!env.AUTH_SESSION_SECRET) return null;
+  const cookies = parseCookies(request);
+  const token = cookies[SESSION_COOKIE];
+  if (!token) return null;
+  return verifyJwt(token, env.AUTH_SESSION_SECRET);
 }
 
 async function handleRemoveBackground(request, env) {
@@ -154,7 +451,7 @@ async function handleRemoveBackground(request, env) {
       status: 200,
       headers: {
         "content-type": "image/png",
-        "content-disposition": `attachment; filename="${filename}"`,
+        "content-disposition": `attachment; filename=\"${filename}\"`,
         "cache-control": "no-store",
       },
     });
@@ -257,8 +554,11 @@ async function handleGoogleCallback(request, env) {
   }
 
   const profile = await userInfoResponse.json();
+  const upserted = await upsertUserFromGoogle(profile, env);
+
   const now = Math.floor(Date.now() / 1000);
   const payload = {
+    uid: upserted.user?.id || null,
     sub: profile.sub,
     name: profile.name,
     email: profile.email,
@@ -270,7 +570,7 @@ async function handleGoogleCallback(request, env) {
   const jwt = await signJwt(payload, env.AUTH_SESSION_SECRET);
 
   const headers = new Headers({
-    location: `/?auth=success&locale=${safeLocale}`,
+    location: `/dashboard?auth=success&locale=${safeLocale}`,
   });
   headers.append(
     "set-cookie",
@@ -304,21 +604,71 @@ async function handleSession(request, env) {
     return json({ authenticated: false, error: "AUTH_SESSION_SECRET is not configured." }, 200);
   }
 
-  const cookies = parseCookies(request);
-  const token = cookies[SESSION_COOKIE];
-  if (!token) return json({ authenticated: false }, 200);
-
-  const payload = await verifyJwt(token, env.AUTH_SESSION_SECRET);
+  const payload = await getSessionPayload(request, env);
   if (!payload) return json({ authenticated: false }, 200);
 
   return json({
     authenticated: true,
     user: {
+      uid: payload.uid || null,
       sub: payload.sub,
       name: payload.name,
       email: payload.email,
       picture: payload.picture,
     },
+  });
+}
+
+async function handleMe(request, env) {
+  const payload = await getSessionPayload(request, env);
+  if (!payload) return json({ authenticated: false }, 401);
+
+  const data = await getUserAndCreditsBySession(payload, env);
+
+  return json({
+    authenticated: true,
+    user: data.user,
+    credits: data.credits,
+    storage: getD1(env) ? "d1" : "memory",
+  });
+}
+
+async function handleOrdersList(request, env) {
+  const payload = await getSessionPayload(request, env);
+  if (!payload) return json({ authenticated: false }, 401);
+
+  const data = await getUserAndCreditsBySession(payload, env);
+  const userId = data.user?.id || payload.uid;
+  if (!userId) return json({ authenticated: false }, 401);
+
+  const orders = await listOrdersByUserId(userId, env);
+  return json({ authenticated: true, orders });
+}
+
+async function handleCreateOrder(request, env) {
+  const payload = await getSessionPayload(request, env);
+  if (!payload) return json({ authenticated: false }, 401);
+
+  const data = await getUserAndCreditsBySession(payload, env);
+  const userId = data.user?.id || payload.uid;
+  if (!userId) return json({ authenticated: false }, 401);
+
+  let body = {};
+  try {
+    body = await request.json();
+  } catch {
+    return json({ ok: false, error: "Invalid JSON body" }, 400);
+  }
+
+  const created = await createDraftOrderForUser(userId, body, env);
+  if (created.error) {
+    return json({ ok: false, error: created.error }, created.status || 400);
+  }
+
+  return json({
+    ok: true,
+    order: created.order,
+    message: "Draft order created. PayPal capture not integrated yet.",
   });
 }
 
@@ -360,6 +710,18 @@ export default {
 
     if (url.pathname === "/api/auth/logout" && request.method === "POST") {
       return handleLogout();
+    }
+
+    if (url.pathname === "/api/me" && request.method === "GET") {
+      return handleMe(request, env);
+    }
+
+    if (url.pathname === "/api/me/orders" && request.method === "GET") {
+      return handleOrdersList(request, env);
+    }
+
+    if (url.pathname === "/api/orders" && request.method === "POST") {
+      return handleCreateOrder(request, env);
     }
 
     return env.ASSETS.fetch(request);
