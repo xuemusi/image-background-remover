@@ -10,6 +10,12 @@ const OAUTH_STATE_COOKIE = "ibgr_oauth_state";
 const SESSION_TTL_SECONDS = 60 * 60 * 24 * 7;
 const OAUTH_STATE_TTL_SECONDS = 60 * 10;
 
+const PLANS = {
+  starter_10: { code: "starter_10", name: "Starter 10", amountCents: 499, currency: "USD", credits: 10 },
+  pro_50: { code: "pro_50", name: "Pro 50", amountCents: 1299, currency: "USD", credits: 50 },
+  business_200: { code: "business_200", name: "Business 200", amountCents: 2999, currency: "USD", credits: 200 },
+};
+
 const memoryUsersBySub = new Map();
 const memoryCreditsByUserId = new Map();
 const memoryOrdersByUserId = new Map();
@@ -128,6 +134,133 @@ function validateImage(file) {
 
 function getD1(env) {
   return env.DB || null;
+}
+
+function ensurePaypalConfig(env) {
+  const missing = [];
+  if (!env.PAYPAL_CLIENT_ID) missing.push("PAYPAL_CLIENT_ID");
+  if (!env.PAYPAL_CLIENT_SECRET) missing.push("PAYPAL_CLIENT_SECRET");
+  return missing;
+}
+
+function getPaypalBaseUrl(env) {
+  return env.PAYPAL_ENV === "live" ? "https://api-m.paypal.com" : "https://api-m.sandbox.paypal.com";
+}
+
+function formatAmount(cents) {
+  return (cents / 100).toFixed(2);
+}
+
+async function getPaypalAccessToken(env) {
+  const missing = ensurePaypalConfig(env);
+  if (missing.length > 0) {
+    return {
+      error: `PayPal is not configured. Missing: ${missing.join(", ")}`,
+      status: 500,
+      code: "PAYPAL_NOT_CONFIGURED",
+    };
+  }
+
+  const basic = btoa(`${env.PAYPAL_CLIENT_ID}:${env.PAYPAL_CLIENT_SECRET}`);
+  const tokenRes = await fetch(`${getPaypalBaseUrl(env)}/v1/oauth2/token`, {
+    method: "POST",
+    headers: {
+      authorization: `Basic ${basic}`,
+      "content-type": "application/x-www-form-urlencoded",
+      accept: "application/json",
+    },
+    body: "grant_type=client_credentials",
+  });
+
+  const data = await tokenRes.json().catch(() => ({}));
+  if (!tokenRes.ok || !data?.access_token) {
+    return {
+      error: data?.error_description || data?.error || "Failed to fetch PayPal access token",
+      status: tokenRes.status || 502,
+      code: "PAYPAL_ACCESS_TOKEN_FAILED",
+    };
+  }
+
+  return { accessToken: data.access_token };
+}
+
+async function createPaypalOrderRemote(order, env, clientRequestId) {
+  const token = await getPaypalAccessToken(env);
+  if (token.error) return token;
+
+  const body = {
+    intent: "CAPTURE",
+    purchase_units: [
+      {
+        reference_id: order.id,
+        custom_id: order.id,
+        description: `${order.planName} credits pack`,
+        amount: {
+          currency_code: order.currency,
+          value: formatAmount(order.amountCents),
+        },
+      },
+    ],
+    application_context: {
+      brand_name: env.NEXT_PUBLIC_APP_NAME || "Image Background Remover",
+      user_action: "PAY_NOW",
+      return_url: `${(env.APP_BASE_URL || "").replace(/\/$/, "") || "https://example.com"}/dashboard?paypal=return`,
+      cancel_url: `${(env.APP_BASE_URL || "").replace(/\/$/, "") || "https://example.com"}/dashboard?paypal=cancel`,
+    },
+  };
+
+  const paypalRes = await fetch(`${getPaypalBaseUrl(env)}/v2/checkout/orders`, {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${token.accessToken}`,
+      "content-type": "application/json",
+      accept: "application/json",
+      ...(clientRequestId ? { "PayPal-Request-Id": clientRequestId } : {}),
+    },
+    body: JSON.stringify(body),
+  });
+
+  const data = await paypalRes.json().catch(() => ({}));
+  if (!paypalRes.ok || !data?.id) {
+    return {
+      error: data?.message || data?.name || "Failed to create PayPal order",
+      status: paypalRes.status || 502,
+      code: "PAYPAL_CREATE_ORDER_FAILED",
+      details: data,
+    };
+  }
+
+  const approveLink = (data.links || []).find((item) => item?.rel === "approve")?.href || null;
+  return { providerOrderId: data.id, approveUrl: approveLink, raw: data };
+}
+
+async function capturePaypalOrderRemote(providerOrderId, env, requestId) {
+  const token = await getPaypalAccessToken(env);
+  if (token.error) return token;
+
+  const paypalRes = await fetch(`${getPaypalBaseUrl(env)}/v2/checkout/orders/${providerOrderId}/capture`, {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${token.accessToken}`,
+      "content-type": "application/json",
+      accept: "application/json",
+      ...(requestId ? { "PayPal-Request-Id": requestId } : {}),
+    },
+    body: "{}",
+  });
+
+  const data = await paypalRes.json().catch(() => ({}));
+  const status = data?.status;
+  if (!paypalRes.ok || (status !== "COMPLETED" && status !== "APPROVED")) {
+    return {
+      error: data?.message || data?.name || "Failed to capture PayPal order",
+      status: paypalRes.status || 502,
+      code: "PAYPAL_CAPTURE_ORDER_FAILED",
+      details: data,
+    };
+  }
+
+  return { captured: data };
 }
 
 async function upsertUserFromGoogle(profile, env) {
@@ -324,12 +457,14 @@ async function listOrdersByUserId(userId, env) {
     .prepare(`
       SELECT
         id,
+        provider_order_id as providerOrderId,
         plan_code as planCode,
         plan_name as planName,
         amount_cents as amountCents,
         currency,
         status,
         credits_granted as creditsGranted,
+        credit_granted_at as creditGrantedAt,
         created_at as createdAt,
         updated_at as updatedAt
       FROM orders
@@ -346,13 +481,8 @@ async function listOrdersByUserId(userId, env) {
 async function createDraftOrderForUser(userId, input, env) {
   const db = getD1(env);
   const now = new Date().toISOString();
-  const planMap = {
-    starter_10: { planName: "Starter 10", amountCents: 499, creditsGranted: 10 },
-    pro_50: { planName: "Pro 50", amountCents: 1299, creditsGranted: 50 },
-    business_200: { planName: "Business 200", amountCents: 2999, creditsGranted: 200 },
-  };
+  const selected = PLANS[input.planCode];
 
-  const selected = planMap[input.planCode];
   if (!selected) {
     return { error: "Invalid plan code", status: 400 };
   }
@@ -362,11 +492,11 @@ async function createDraftOrderForUser(userId, input, env) {
     userId,
     provider: "paypal",
     providerOrderId: null,
-    planCode: input.planCode,
-    planName: selected.planName,
+    planCode: selected.code,
+    planName: selected.name,
     amountCents: selected.amountCents,
-    currency: "USD",
-    status: "pending",
+    currency: selected.currency,
+    status: "created",
     creditsGranted: 0,
     creditGrantedAt: null,
     createdAt: now,
@@ -404,6 +534,182 @@ async function createDraftOrderForUser(userId, input, env) {
     .run();
 
   return { order };
+}
+
+async function updateOrderProvider(orderId, providerOrderId, status, env) {
+  const db = getD1(env);
+  if (!db) return;
+
+  await db
+    .prepare(`
+      UPDATE orders
+      SET provider_order_id = ?2, status = ?3, updated_at = datetime('now')
+      WHERE id = ?1
+    `)
+    .bind(orderId, providerOrderId, status)
+    .run();
+}
+
+async function findOrderForUser({ userId, localOrderId, providerOrderId }, env) {
+  const db = getD1(env);
+
+  if (!db) {
+    const list = memoryOrdersByUserId.get(userId) || [];
+    return list.find((item) => (localOrderId ? item.id === localOrderId : item.providerOrderId === providerOrderId)) || null;
+  }
+
+  if (localOrderId) {
+    return db
+      .prepare(`
+        SELECT
+          id,
+          user_id as userId,
+          provider,
+          provider_order_id as providerOrderId,
+          plan_code as planCode,
+          plan_name as planName,
+          amount_cents as amountCents,
+          currency,
+          status,
+          credits_granted as creditsGranted,
+          credit_granted_at as creditGrantedAt,
+          created_at as createdAt,
+          updated_at as updatedAt
+        FROM orders
+        WHERE id = ?1 AND user_id = ?2
+      `)
+      .bind(localOrderId, userId)
+      .first();
+  }
+
+  return db
+    .prepare(`
+      SELECT
+        id,
+        user_id as userId,
+        provider,
+        provider_order_id as providerOrderId,
+        plan_code as planCode,
+        plan_name as planName,
+        amount_cents as amountCents,
+        currency,
+        status,
+        credits_granted as creditsGranted,
+        credit_granted_at as creditGrantedAt,
+        created_at as createdAt,
+        updated_at as updatedAt
+      FROM orders
+      WHERE provider_order_id = ?1 AND user_id = ?2
+    `)
+    .bind(providerOrderId, userId)
+    .first();
+}
+
+async function grantCreditsIdempotent(order, env) {
+  const db = getD1(env);
+
+  if (!db) {
+    const list = memoryOrdersByUserId.get(order.userId) || [];
+    const target = list.find((item) => item.id === order.id);
+
+    if (!target) return { error: "Order not found", status: 404 };
+    if (target.creditGrantedAt) {
+      return { granted: false, credits: memoryCreditsByUserId.get(order.userId) };
+    }
+
+    const plan = PLANS[target.planCode];
+    const now = new Date().toISOString();
+    const credits = memoryCreditsByUserId.get(order.userId) || {
+      userId: order.userId,
+      balance: 0,
+      lifetimeCredited: 0,
+      lifetimeUsed: 0,
+    };
+
+    target.status = "credit_granted";
+    target.creditsGranted = plan?.credits || 0;
+    target.creditGrantedAt = now;
+    target.updatedAt = now;
+
+    credits.balance += target.creditsGranted;
+    credits.lifetimeCredited += target.creditsGranted;
+    credits.updatedAt = now;
+    memoryCreditsByUserId.set(order.userId, credits);
+
+    return { granted: true, credits };
+  }
+
+  const plan = PLANS[order.planCode];
+  const creditsToGrant = plan?.credits || 0;
+
+  await db
+    .prepare(`
+      INSERT INTO user_credits (user_id, balance, lifetime_credited, lifetime_used, updated_at)
+      VALUES (?1, 0, 0, 0, datetime('now'))
+      ON CONFLICT(user_id) DO NOTHING
+    `)
+    .bind(order.userId)
+    .run();
+
+  const mark = await db
+    .prepare(`
+      UPDATE orders
+      SET
+        status = 'credit_granted',
+        credits_granted = ?2,
+        credit_granted_at = datetime('now'),
+        updated_at = datetime('now')
+      WHERE id = ?1 AND credit_granted_at IS NULL
+    `)
+    .bind(order.id, creditsToGrant)
+    .run();
+
+  const changes = Number(mark?.meta?.changes || 0);
+  if (changes > 0) {
+    await db
+      .prepare(`
+        UPDATE user_credits
+        SET
+          balance = balance + ?2,
+          lifetime_credited = lifetime_credited + ?2,
+          updated_at = datetime('now')
+        WHERE user_id = ?1
+      `)
+      .bind(order.userId, creditsToGrant)
+      .run();
+
+    const credits = await db
+      .prepare(`
+        SELECT
+          user_id as userId,
+          balance,
+          lifetime_credited as lifetimeCredited,
+          lifetime_used as lifetimeUsed,
+          updated_at as updatedAt
+        FROM user_credits
+        WHERE user_id = ?1
+      `)
+      .bind(order.userId)
+      .first();
+
+    return { granted: true, credits };
+  }
+
+  const credits = await db
+    .prepare(`
+      SELECT
+        user_id as userId,
+        balance,
+        lifetime_credited as lifetimeCredited,
+        lifetime_used as lifetimeUsed,
+        updated_at as updatedAt
+      FROM user_credits
+      WHERE user_id = ?1
+    `)
+    .bind(order.userId)
+    .first();
+
+  return { granted: false, credits };
 }
 
 async function getSessionPayload(request, env) {
@@ -672,6 +978,166 @@ async function handleCreateOrder(request, env) {
   });
 }
 
+async function handlePaypalCreateOrder(request, env) {
+  const payload = await getSessionPayload(request, env);
+  if (!payload) return json({ authenticated: false }, 401);
+
+  const data = await getUserAndCreditsBySession(payload, env);
+  const userId = data.user?.id || payload.uid;
+  if (!userId) return json({ authenticated: false }, 401);
+
+  let body = {};
+  try {
+    body = await request.json();
+  } catch {
+    return json({ ok: false, error: "Invalid JSON body" }, 400);
+  }
+
+  const plan = PLANS[body.planCode];
+  if (!plan) {
+    return json({ ok: false, error: "Invalid plan code" }, 400);
+  }
+
+  const created = await createDraftOrderForUser(userId, { planCode: body.planCode }, env);
+  if (created.error) {
+    return json({ ok: false, error: created.error }, created.status || 400);
+  }
+
+  // Idempotency placeholder: forward client key to PayPal request-id.
+  // In phase-2 we can persist it in DB for stronger dedupe across retries.
+  const clientRequestId = body.idempotencyKey || request.headers.get("x-idempotency-key") || randomId("ppreq");
+  const remote = await createPaypalOrderRemote(created.order, env, clientRequestId);
+  if (remote.error) {
+    return json(
+      {
+        ok: false,
+        code: remote.code,
+        error: remote.error,
+        order: created.order,
+      },
+      remote.status || 502,
+    );
+  }
+
+  if (getD1(env)) {
+    await updateOrderProvider(created.order.id, remote.providerOrderId, "approval_pending", env);
+  } else {
+    const list = memoryOrdersByUserId.get(userId) || [];
+    const target = list.find((item) => item.id === created.order.id);
+    if (target) {
+      target.providerOrderId = remote.providerOrderId;
+      target.status = "approval_pending";
+      target.updatedAt = new Date().toISOString();
+    }
+  }
+
+  return json({
+    ok: true,
+    order: {
+      localOrderId: created.order.id,
+      providerOrderId: remote.providerOrderId,
+      planCode: plan.code,
+      amount: formatAmount(plan.amountCents),
+      currency: plan.currency,
+      approveUrl: remote.approveUrl,
+    },
+  });
+}
+
+async function handlePaypalCaptureOrder(request, env) {
+  const payload = await getSessionPayload(request, env);
+  if (!payload) return json({ authenticated: false }, 401);
+
+  const sessionData = await getUserAndCreditsBySession(payload, env);
+  const userId = sessionData.user?.id || payload.uid;
+  if (!userId) return json({ authenticated: false }, 401);
+
+  let body = {};
+  try {
+    body = await request.json();
+  } catch {
+    return json({ ok: false, error: "Invalid JSON body" }, 400);
+  }
+
+  const localOrderId = typeof body.localOrderId === "string" ? body.localOrderId : null;
+  const providerOrderId = typeof body.providerOrderId === "string" ? body.providerOrderId : null;
+  if (!localOrderId && !providerOrderId) {
+    return json({ ok: false, error: "localOrderId or providerOrderId is required" }, 400);
+  }
+
+  const order = await findOrderForUser({ userId, localOrderId, providerOrderId }, env);
+  if (!order) {
+    return json({ ok: false, error: "Order not found" }, 404);
+  }
+
+  if (!order.providerOrderId && providerOrderId && localOrderId) {
+    await updateOrderProvider(localOrderId, providerOrderId, "approval_pending", env);
+    order.providerOrderId = providerOrderId;
+  }
+
+  if (!order.providerOrderId) {
+    return json({ ok: false, error: "Order has no PayPal provider order id yet" }, 409);
+  }
+
+  if (order.creditGrantedAt) {
+    const latest = await getUserAndCreditsBySession(payload, env);
+    return json({
+      ok: true,
+      idempotent: true,
+      order: {
+        id: order.id,
+        status: "credit_granted",
+        creditsGranted: order.creditsGranted,
+      },
+      credits: latest.credits,
+    });
+  }
+
+  const capture = await capturePaypalOrderRemote(order.providerOrderId, env, body.idempotencyKey || randomId("ppcap"));
+  if (capture.error) {
+    return json({ ok: false, code: capture.code, error: capture.error }, capture.status || 502);
+  }
+
+  if (getD1(env)) {
+    await updateOrderProvider(order.id, order.providerOrderId, "captured", env);
+  } else {
+    const list = memoryOrdersByUserId.get(userId) || [];
+    const target = list.find((item) => item.id === order.id);
+    if (target) {
+      target.status = "captured";
+      target.updatedAt = new Date().toISOString();
+    }
+  }
+
+  const grant = await grantCreditsIdempotent(order, env);
+  if (grant.error) {
+    return json({ ok: false, error: grant.error }, grant.status || 500);
+  }
+
+  return json({
+    ok: true,
+    order: {
+      id: order.id,
+      providerOrderId: order.providerOrderId,
+      status: "credit_granted",
+      creditsGranted: PLANS[order.planCode]?.credits || order.creditsGranted || 0,
+    },
+    credits: grant.credits,
+  });
+}
+
+async function handlePlans() {
+  return json({
+    plans: Object.values(PLANS).map((item) => ({
+      code: item.code,
+      name: item.name,
+      price: Number(formatAmount(item.amountCents)),
+      currency: item.currency,
+      credits: item.credits,
+    })),
+  });
+}
+
 async function handleLogout() {
   return new Response(null, {
     status: 204,
@@ -722,6 +1188,18 @@ export default {
 
     if (url.pathname === "/api/orders" && request.method === "POST") {
       return handleCreateOrder(request, env);
+    }
+
+    if (url.pathname === "/api/plans" && request.method === "GET") {
+      return handlePlans();
+    }
+
+    if (url.pathname === "/api/paypal/create-order" && request.method === "POST") {
+      return handlePaypalCreateOrder(request, env);
+    }
+
+    if (url.pathname === "/api/paypal/capture-order" && request.method === "POST") {
+      return handlePaypalCaptureOrder(request, env);
     }
 
     return env.ASSETS.fetch(request);

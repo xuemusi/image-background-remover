@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 
 type MeResponse = {
@@ -23,45 +23,157 @@ type MeResponse = {
 
 type Order = {
   id: string;
+  providerOrderId?: string | null;
   planCode: string;
   planName: string;
   amountCents: number;
   currency: string;
   status: string;
+  creditsGranted?: number;
   createdAt: string;
 };
+
+type Plan = {
+  code: string;
+  name: string;
+  price: number;
+  currency: string;
+  credits: number;
+};
+
+const FALLBACK_PLANS: Plan[] = [
+  { code: "starter_10", name: "Starter 10", price: 4.99, currency: "USD", credits: 10 },
+  { code: "pro_50", name: "Pro 50", price: 12.99, currency: "USD", credits: 50 },
+  { code: "business_200", name: "Business 200", price: 29.99, currency: "USD", credits: 200 },
+];
 
 export function DashboardClient() {
   const [loading, setLoading] = useState(true);
   const [me, setMe] = useState<MeResponse | null>(null);
   const [orders, setOrders] = useState<Order[]>([]);
+  const [plans, setPlans] = useState<Plan[]>(FALLBACK_PLANS);
+  const [paymentBusyPlan, setPaymentBusyPlan] = useState<string | null>(null);
+  const [paymentMessage, setPaymentMessage] = useState<string>("");
+  const [paymentError, setPaymentError] = useState<string>("");
+
+  const loadAll = async () => {
+    const meRes = await fetch("/api/me", { credentials: "include" });
+    if (!meRes.ok) {
+      setMe({ authenticated: false });
+      return;
+    }
+
+    const meData = (await meRes.json()) as MeResponse;
+    setMe(meData);
+
+    if (!meData.authenticated) return;
+
+    const [orderRes, planRes] = await Promise.all([
+      fetch("/api/me/orders", { credentials: "include" }),
+      fetch("/api/plans", { credentials: "include" }),
+    ]);
+
+    if (orderRes.ok) {
+      const data = await orderRes.json();
+      setOrders(data.orders || []);
+    }
+
+    if (planRes.ok) {
+      const data = await planRes.json();
+      if (Array.isArray(data?.plans) && data.plans.length > 0) {
+        setPlans(data.plans);
+      }
+    }
+  };
 
   useEffect(() => {
     const load = async () => {
       try {
-        const meRes = await fetch("/api/me", { credentials: "include" });
-        if (!meRes.ok) {
-          setMe({ authenticated: false });
-          return;
-        }
-
-        const meData = (await meRes.json()) as MeResponse;
-        setMe(meData);
-
-        if (meData.authenticated) {
-          const orderRes = await fetch("/api/me/orders", { credentials: "include" });
-          if (orderRes.ok) {
-            const data = await orderRes.json();
-            setOrders(data.orders || []);
-          }
-        }
+        await loadAll();
       } finally {
         setLoading(false);
       }
     };
-
     load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    if (loading || typeof window === "undefined") return;
+
+    const token = new URLSearchParams(window.location.search).get("token");
+    if (!token) return;
+
+    const capture = async () => {
+      try {
+        setPaymentMessage("Finalizing PayPal payment...");
+        setPaymentError("");
+        const res = await fetch("/api/paypal/capture-order", {
+          method: "POST",
+          credentials: "include",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ providerOrderId: token }),
+        });
+        const data = await res.json();
+        if (!res.ok || !data?.ok) {
+          setPaymentError(data?.error || "Failed to capture PayPal order.");
+          setPaymentMessage("");
+          return;
+        }
+
+        setPaymentMessage(`Payment successful. ${data?.order?.creditsGranted || 0} credits added.`);
+        await loadAll();
+
+        const cleanUrl = `${window.location.pathname}${window.location.hash || ""}`;
+        window.history.replaceState({}, "", cleanUrl);
+      } catch {
+        setPaymentError("Failed to capture PayPal order.");
+      }
+    };
+
+    capture();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loading]);
+
+  const sortedPlans = useMemo(
+    () => [...plans].sort((a, b) => a.price - b.price),
+    [plans],
+  );
+
+  const handleBuy = async (planCode: string) => {
+    setPaymentBusyPlan(planCode);
+    setPaymentError("");
+    setPaymentMessage("");
+
+    try {
+      const res = await fetch("/api/paypal/create-order", {
+        method: "POST",
+        credentials: "include",
+        headers: {
+          "content-type": "application/json",
+          "x-idempotency-key": `buy-${planCode}-${Date.now()}`,
+        },
+        body: JSON.stringify({ planCode }),
+      });
+
+      const data = await res.json();
+      if (!res.ok || !data?.ok) {
+        setPaymentError(data?.error || "Failed to create PayPal order");
+        return;
+      }
+
+      if (data?.order?.approveUrl) {
+        window.location.href = data.order.approveUrl;
+        return;
+      }
+
+      setPaymentMessage(`Order ${data?.order?.localOrderId} created. Missing approveUrl (check PayPal account config).`);
+    } catch {
+      setPaymentError("Failed to create PayPal order.");
+    } finally {
+      setPaymentBusyPlan(null);
+    }
+  };
 
   if (loading) {
     return (
@@ -138,35 +250,45 @@ export function DashboardClient() {
                 <p className="mt-1 text-xl font-semibold text-white">{credits.lifetimeUsed}</p>
               </div>
             </div>
-            <p className="mt-4 text-xs text-slate-400">PayPal integration is next. This panel is ready for live credits after purchase.</p>
+            <p className="mt-4 text-xs text-slate-400">PayPal Phase-1 sandbox skeleton is active. Create order → approve on PayPal → return and auto-capture.</p>
           </article>
         </section>
 
-        <section className="rounded-2xl border border-slate-800 bg-slate-900/60 p-5">
-          <div className="flex items-center justify-between">
-            <h2 className="text-lg font-semibold text-white">Recent Orders</h2>
-            <button
-              type="button"
-              onClick={async () => {
-                const res = await fetch("/api/orders", {
-                  method: "POST",
-                  credentials: "include",
-                  headers: { "content-type": "application/json" },
-                  body: JSON.stringify({ planCode: "starter_10" }),
-                });
-                if (res.ok) window.location.reload();
-              }}
-              className="rounded-full border border-slate-600 px-3 py-1 text-xs text-white"
-            >
-              Create Test Draft Order
-            </button>
+        <section id="buy" className="rounded-2xl border border-slate-800 bg-slate-900/60 p-5">
+          <h2 className="text-lg font-semibold text-white">Buy Credits (PayPal Sandbox)</h2>
+          <p className="mt-1 text-xs text-slate-400">If credentials are missing, API returns clear setup errors.</p>
+
+          <div className="mt-4 grid gap-4 md:grid-cols-3">
+            {sortedPlans.map((plan) => (
+              <article key={plan.code} className="rounded-xl border border-slate-800 bg-slate-950/60 p-4">
+                <p className="text-sm font-semibold text-white">{plan.name}</p>
+                <p className="mt-1 text-xs text-slate-400">{plan.credits} credits</p>
+                <p className="mt-2 text-lg text-white">{plan.price.toFixed(2)} {plan.currency}</p>
+                <button
+                  type="button"
+                  disabled={paymentBusyPlan === plan.code}
+                  onClick={() => handleBuy(plan.code)}
+                  className="mt-3 w-full rounded-full border border-slate-600 px-3 py-2 text-xs text-white disabled:opacity-60"
+                >
+                  {paymentBusyPlan === plan.code ? "Creating..." : "Buy with PayPal"}
+                </button>
+              </article>
+            ))}
           </div>
 
+          {paymentMessage ? <p className="mt-4 text-sm text-emerald-300">{paymentMessage}</p> : null}
+          {paymentError ? <p className="mt-4 text-sm text-rose-300">{paymentError}</p> : null}
+        </section>
+
+        <section className="rounded-2xl border border-slate-800 bg-slate-900/60 p-5">
+          <h2 className="text-lg font-semibold text-white">Recent Orders</h2>
+
           <div className="mt-4 overflow-x-auto">
-            <table className="w-full min-w-[560px] text-left text-sm">
+            <table className="w-full min-w-[640px] text-left text-sm">
               <thead className="text-xs text-slate-400">
                 <tr>
                   <th className="pb-2">Order ID</th>
+                  <th className="pb-2">PayPal Order ID</th>
                   <th className="pb-2">Plan</th>
                   <th className="pb-2">Amount</th>
                   <th className="pb-2">Status</th>
@@ -176,7 +298,7 @@ export function DashboardClient() {
               <tbody>
                 {orders.length === 0 ? (
                   <tr>
-                    <td className="py-3 text-slate-400" colSpan={5}>
+                    <td className="py-3 text-slate-400" colSpan={6}>
                       No orders yet.
                     </td>
                   </tr>
@@ -184,6 +306,7 @@ export function DashboardClient() {
                   orders.map((order) => (
                     <tr key={order.id} className="border-t border-slate-800">
                       <td className="py-3 text-xs text-slate-300">{order.id}</td>
+                      <td className="py-3 text-xs text-slate-400">{order.providerOrderId || "-"}</td>
                       <td className="py-3 text-slate-200">{order.planName || order.planCode}</td>
                       <td className="py-3 text-slate-200">{(order.amountCents / 100).toFixed(2)} {order.currency}</td>
                       <td className="py-3 text-slate-200">{order.status}</td>

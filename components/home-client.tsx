@@ -108,6 +108,12 @@ export function HomeClient() {
                   >
                     {t.dashboard}
                   </Link>
+                  <Link
+                    href="/dashboard#buy"
+                    className="rounded-full border border-emerald-500/50 px-4 py-1 text-sm font-medium text-emerald-200 transition hover:border-emerald-300"
+                  >
+                    Buy Credits
+                  </Link>
                   <button
                     type="button"
                     onClick={handleSignOut}

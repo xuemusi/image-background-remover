@@ -57,11 +57,15 @@ REMOVE_BG_API_KEY=your_remove_bg_api_key_here
 GOOGLE_CLIENT_ID=your_google_client_id_here
 GOOGLE_CLIENT_SECRET=your_google_client_secret_here
 AUTH_SESSION_SECRET=replace_with_a_long_random_secret
-# 可选：用于显式声明回调域名（默认自动用当前请求域名）
-# APP_BASE_URL=http://localhost:3000
+APP_BASE_URL=http://localhost:3000
+PAYPAL_ENV=sandbox
+PAYPAL_CLIENT_ID=your_paypal_client_id_here
+PAYPAL_CLIENT_SECRET=your_paypal_client_secret_here
+# 可选：Webhook 二期使用
+# PAYPAL_WEBHOOK_ID=your_paypal_webhook_id_here
 ```
 
-> 注意：`REMOVE_BG_API_KEY`、`GOOGLE_CLIENT_SECRET`、`AUTH_SESSION_SECRET` 必须只保留在服务端，不要暴露到前端。
+> 注意：`REMOVE_BG_API_KEY`、`GOOGLE_CLIENT_SECRET`、`AUTH_SESSION_SECRET`、`PAYPAL_CLIENT_SECRET` 必须只保留在服务端，不要暴露到前端。
 
 ## 本地启动
 
@@ -116,7 +120,20 @@ npm run dev
 
 - `GET /api/me`：当前用户信息 + credits（D1 或内存 fallback）
 - `GET /api/me/orders`：当前用户最近订单
-- `POST /api/orders`：创建订单草稿（PayPal 占位，尚未 capture）
+- `GET /api/plans`：返回可购买额度套餐
+
+### PayPal API（Phase-1 skeleton）
+
+- `POST /api/paypal/create-order`
+  - 入参：`{ "planCode": "pro_50" }`
+  - 行为：创建本地 orders 草稿 + 远端 PayPal order
+  - 出参：`localOrderId`、`providerOrderId`、`approveUrl`
+- `POST /api/paypal/capture-order`
+  - 入参：`{ "localOrderId": "..." }` 或 `{ "providerOrderId": "..." }`
+  - 行为：调用 PayPal capture，并幂等发放 credits 到 `user_credits`
+  - 幂等：已发放过额度的订单重复 capture 不会重复加余额
+
+> 当前为 sandbox-ready 骨架：若缺 `PAYPAL_CLIENT_ID/PAYPAL_CLIENT_SECRET`，接口会返回清晰错误。
 
 ## Cloudflare 部署建议
 
@@ -134,6 +151,9 @@ npm run dev
   - `GOOGLE_CLIENT_ID`
   - `GOOGLE_CLIENT_SECRET`
   - `AUTH_SESSION_SECRET`
+  - `PAYPAL_ENV`（建议先 `sandbox`）
+  - `PAYPAL_CLIENT_ID`
+  - `PAYPAL_CLIENT_SECRET`
   - （可选）`APP_BASE_URL`
 - 配置 D1 绑定 `DB`（见 `wrangler.toml`）并执行 `migrations/0001_user_system.sql`
 - 不开启图片持久化存储

@@ -4,6 +4,8 @@ compatibility_flags = ["nodejs_compat"]
 
 [vars]
 NEXT_PUBLIC_APP_NAME = "Image Background Remover"
+PAYPAL_ENV = "sandbox"
+# APP_BASE_URL = "https://your-domain.example"
 
 # For local development, put secrets in .env.local.
 # For Cloudflare deploy, set with:
