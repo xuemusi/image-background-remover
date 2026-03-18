@@ -13,4 +13,4 @@ NEXT_PUBLIC_APP_NAME = "Image Background Remover"
 [[d1_databases]]
 binding = "DB"
 database_name = "image_bg_remover"
-database_id = "replace-with-your-d1-database-id"
+database_id = "29d61dd1-8a32-43ec-85a8-efde5a1c4877"
