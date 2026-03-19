@@ -27,6 +27,7 @@ export type HomeCopy = {
   signingIn: string;
   signOut: string;
   dashboard: string;
+  buyCredits: string;
   signedInAs: string;
   notSignedIn: string;
   heroBadge: string;
@@ -50,6 +51,7 @@ export const copy: Record<Locale, HomeCopy> = {
     signingIn: "Redirecting to Google…",
     signOut: "Sign out",
     dashboard: "Dashboard",
+    buyCredits: "Buy Credits",
     signedInAs: "Signed in as",
     notSignedIn: "Not signed in",
     heroBadge: "Cloudflare-ready MVP · Next.js + Tailwind CSS",
@@ -123,6 +125,7 @@ export const copy: Record<Locale, HomeCopy> = {
     signingIn: "正在跳转到 Google…",
     signOut: "退出登录",
     dashboard: "个人中心",
+    buyCredits: "购买额度",
     signedInAs: "当前登录",
     notSignedIn: "未登录",
     heroBadge: "Cloudflare 可部署 MVP · Next.js + Tailwind CSS",
