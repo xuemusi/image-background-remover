@@ -50,6 +50,23 @@ const FALLBACK_PLANS: Plan[] = [
   { code: "business_200", name: "Business 200", price: 29.99, currency: "USD", credits: 200 },
 ];
 
+const statusLabelMap = {
+  en: {
+    approval_pending: "Pending approval",
+    captured: "Captured",
+    credit_granted: "Credits granted",
+    failed: "Failed",
+    cancelled: "Cancelled",
+  },
+  zh: {
+    approval_pending: "待支付确认",
+    captured: "已扣款",
+    credit_granted: "已发放额度",
+    failed: "失败",
+    cancelled: "已取消",
+  },
+} as const;
+
 const dashboardCopy = {
   en: {
     pageTitle: "Account Dashboard",
@@ -223,6 +240,7 @@ export function DashboardClient() {
   }, [loading, locale]);
 
   const sortedPlans = useMemo(() => [...plans].sort((a, b) => a.price - b.price), [plans]);
+  const statusLabels = statusLabelMap[locale];
 
   const handleBuy = async (planCode: string) => {
     setPaymentBusyPlan(planCode);
@@ -412,7 +430,7 @@ export function DashboardClient() {
                       <td className="py-3 text-xs text-slate-400">{order.providerOrderId || "-"}</td>
                       <td className="py-3 text-slate-200">{order.planName || order.planCode}</td>
                       <td className="py-3 text-slate-200">{(order.amountCents / 100).toFixed(2)} {order.currency}</td>
-                      <td className="py-3 text-slate-200">{order.status}</td>
+                      <td className="py-3 text-slate-200">{statusLabels[order.status as keyof typeof statusLabels] || order.status}</td>
                       <td className="py-3 text-slate-400">{order.createdAt || "-"}</td>
                     </tr>
                   ))
